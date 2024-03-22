@@ -1,0 +1,49 @@
+<html>
+        <head></head>
+        <body>
+                <h1>static-pie-x86-64-elf-loader</h1>
+                <p>
+                <code>
+                cargo build &&
+                cd test &&
+                ./build_test.sh &&
+                ./test YourName
+                </code>
+                </p>
+                PT_GNU_STACK segment is ignored, therefore it doesn't support (on purpose) ELFs with executable stack, like in <a href="https://github.com/lvndry/elf-loader/blob/master/src/elf-loader.c">this</a> (non-working) project.
+                <h2>TODOs</h2>
+                <p>
+                        <ul>
+                                <li>exploit <span>SIGSEGV</span> signal to load pages of segments on demand.
+                                see <a href="https://github.com/anaglodariu/ELFExecutableLoader">this repo</a></li>
+                                <li>turn it into a crypter! see <a href="https://0x00sec.org/t/a-simple-linux-crypter/537">this</a></li>
+                                <li>ask <a href="https://github.com/h0mbre">@h0mbre</a> where he's gotten those <a href="https://h0mbre.github.io/New_Fuzzer_Project/#executing-the-loaded-program">specs</a> about _start <span>rdx</span> initialization,
+                                even though it matches with this <a href="https://github.com/malisal/loaders/blob/master/elf/sysdep/linux/x86_64/arch.h">source</a> but it doesn't with <a href="http://6.s081.scripts.mit.edu/sp18/x86-64-architecture-guide.html">these</a> <a href="https://refspecs.linuxbase.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/baselib---libc-start-main-.html">ones</a> about args positionings</li>
+                                <li>wait for <a href="https://github.com/darfink/region-rs/issues/28">this</a> in order to get rid of <span>flags_to_prot</span> function, and <a href="https://github.com/darfink/region-rs/issues/29">this</a></li>
+                                <li>make it work on ARM64 too!</li>
+                                <li>modularize it</li>
+                                <li>learn how to build macros</li>
+                        </ul>
+                </p>
+                <h2>references</h2>
+                <p>
+                        <ul>
+                                <li>the main reference is this <a href="https://fasterthanli.me/series/making-our-own-executable-packer/">amazing series</a></li>
+                                <li><a href="https://sivachandra.github.io/elf-by-example/relocations.html">this one</a> tells us which types of relocation need to be applied for static(-pie) ELF</li>
+                                <li>light <a href="http://phrack.org/issues/58/5.html">ref</a> about ELF</li>
+                                <li>about <a href="https://stackoverflow.com/questions/610682/do-bss-section-zero-initialized-variables-occupy-space-in-elf-file">bss</a> section</li>
+                                <li>the only (half) working similar (yet cryptic) <a href="https://github.com/MikhailProg/elf">project</a> I found:
+                                although I edited it to make it dependent on standard libs, it calls the <a href="https://ftp.math.utah.edu/u/ma/hohn/linux/misc/elf/node3.html">__libc_start_main fini handler</a> after returning from <span>scanf</span> function call...</li>
+
+                        </ul>
+                </p>
+                <h2>doubts to clear</h2>
+                <p>
+                        <ul>
+                                <li><a href="https://fasterthanli.me/series/making-our-own-executable-packer/part-12">Amos</a> and <a href="https://sivachandra.github.io/elf-by-example/crt.html">this article</a> say you should setup TLS,
+                                but from the answers of <a href="https://stackoverflow.com/questions/30377020/on-linux-is-tls-set-up-by-the-kernel-or-by-libc-or-other-language-runtime">these</a> <a href="https://stackoverflow.com/questions/4126184/elf-file-tls-and-load-program-sections">two</a> stackoverflow questions, it seems it's not loader's duty</li>
+                        </ul>
+                </p>
+
+        </body>
+</html>
