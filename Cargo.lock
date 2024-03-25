@@ -9,16 +9,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
-name = "elf"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
-
-[[package]]
 name = "libc"
-version = "0.2.107"
+version = "0.2.153"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbe5e23404da5b4f555ef85ebed98fb4083e55a00c317800bc2a50ede9f3d219"
+checksum = "9c198f91728a82281a64e1f4f9eeb25d82cb32a5de251c6bd1b5154d63a8e7bd"
 
 [[package]]
 name = "mach2"
@@ -31,9 +25,8 @@ dependencies = [
 
 [[package]]
 name = "region"
-version = "3.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02c552070b3486ed144a088c1a1016a830d9acb176707c9a12e37b5e2cb3b5aa"
+version = "3.0.2"
+source = "git+https://github.com/darfink/region-rs.git#fc89b0c76d51bd13a591dca5fc9b9c8a0224aa18"
 dependencies = [
  "bitflags",
  "libc",
@@ -45,7 +38,7 @@ dependencies = [
 name = "static-pie-x86-64-elf-loader"
 version = "0.1.0"
 dependencies = [
- "elf",
+ "libc",
  "region",
 ]
 

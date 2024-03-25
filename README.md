@@ -2,16 +2,22 @@
 static-pie-x86-64-elf-loader
 ============================
 
-`cargo build && cd test && ./build_test.sh && ./test YourName`
+`cargo build && cd test && ./build_test.sh && ../target/debug/static-pie-x86-64-elf-loader ./test YourName`
 
-PT\_GNU\_STACK segment is ignored, therefore it doesn't support (on purpose) ELFs with executable stack, like in [this](https://github.com/lvndry/elf-loader/blob/master/src/elf-loader.c) (non-working) project.
+ROAD TO BUILD A LINUX CRYPTER!
+-----
+*   based on [this article](https://fasterthanli.me/series/reading-files-the-hard-way/part-2).
+*   so far I'm able to exploit SIGSEGV signal to load segments on demand.
+
+
+PT\_GNU\_STACK segment is ignored (on purpose), therefore it doesn't support ELFs with executable stack, unlike [this](https://github.com/lvndry/elf-loader/blob/master/src/elf-loader.c) (non-working) project.
 
 TODOs
 -----
 
 *   exploit SIGSEGV signal to load pages of segments on demand. see [this repo](https://github.com/anaglodariu/ELFExecutableLoader)
 *   turn it into a crypter! see [this](https://0x00sec.org/t/a-simple-linux-crypter/537)
-*   ask [@h0mbre](https://github.com/h0mbre) where he's gotten those [specs](https://h0mbre.github.io/New_Fuzzer_Project/#executing-the-loaded-program) about \_start rdx initialization, even though it matches with this [source](https://github.com/malisal/loaders/blob/master/elf/sysdep/linux/x86_64/arch.h) but it doesn't with [these](http://6.s081.scripts.mit.edu/sp18/x86-64-architecture-guide.html) [ones](https://refspecs.linuxbase.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/baselib---libc-start-main-.html) about args positionings
+*   ask [@h0mbre](https://github.com/h0mbre) where he's gotten those [specs](https://h0mbre.github.io/New_Fuzzer_Project/#executing-the-loaded-program) about \_start rdx initialization, even though they matches with this [source](https://github.com/malisal/loaders/blob/master/elf/sysdep/linux/x86_64/arch.h) but they don't with [these](http://6.s081.scripts.mit.edu/sp18/x86-64-architecture-guide.html) [ones](https://refspecs.linuxbase.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/baselib---libc-start-main-.html) about args positionings
 *   wait for [this](https://github.com/darfink/region-rs/issues/28) in order to get rid of flags\_to\_prot function, and [this](https://github.com/darfink/region-rs/issues/29)
 *   make it work on ARM64 too!
 *   modularize it
@@ -29,4 +35,5 @@ references
 doubts to clear
 ---------------
 
-*   [Amos](https://fasterthanli.me/series/making-our-own-executable-packer/part-12) and [this article](https://sivachandra.github.io/elf-by-example/crt.html) say you should setup TLS, but from the answers of [these](https://stackoverflow.com/questions/30377020/on-linux-is-tls-set-up-by-the-kernel-or-by-libc-or-other-language-runtime) [two](https://stackoverflow.com/questions/4126184/elf-file-tls-and-load-program-sections) stackoverflow questions, it seems it's not loader's duty
+*   [Amos](https://fasterthanli.me/series/making-our-own-executable-packer/part-12) and [this article](https://sivachandra.github.io/elf-by-example/crt.html) say you should setup TLS, but from the answers of [these](https://stackoverflow.com/questions/30377020/on-linux-is-tls-set-up-by-the-kernel-or-by-libc-or-other-language-runtime) [two](https://stackoverflow.com/questions/4126184/elf-file-tls-and-load-program-sections) stackoverflow questions, it seems it's not loader's duty.
+**EDIT** CRT = LIBC. Indeed relocations are not necessary and it invokes our finalizer.

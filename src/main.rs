@@ -1,6 +1,4 @@
-use elf::{
-    abi, file::Elf64_Ehdr, relocation::Elf64_Rela, section::Elf64_Shdr, segment::Elf64_Phdr,
-};
+use libc::{Elf64_Ehdr, Elf64_Phdr};
 use region::{alloc, alloc_at, protect, Allocation, Protection};
 use std::{
     arch::asm,
@@ -9,9 +7,12 @@ use std::{
     error::Error,
     ffi::CString,
     mem::transmute,
-    ptr::write_unaligned,
     slice::{from_raw_parts, from_raw_parts_mut},
+    sync::OnceLock,
 };
+
+static BASE: OnceLock<u64> = OnceLock::new();
+static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
 
 fn as_custom_slice<T>(bytes: &[u8], len: usize) -> &[T] {
     unsafe { from_raw_parts::<T>(bytes.as_ptr().cast(), len) }
@@ -32,44 +33,11 @@ fn flags_to_prot(mut p_flags: u32) -> region::Protection {
     })
 }
 
-unsafe fn apply_irelative_relocation(base: *const u8, rela: &Elf64_Rela) {
-    let selector: extern "C" fn() -> u64 =
-        transmute(base.wrapping_add(rela.r_addend.try_into().unwrap()));
-
-    // write into GOT table entry
-    write_unaligned(
-        base.wrapping_add(rela.r_offset as usize)
-            .cast::<u64>()
-            .cast_mut(),
-        selector(),
-    );
-}
-
-unsafe fn apply_relative_relocation(base: *const u8, rela: &Elf64_Rela) {
-    write_unaligned(
-        base.wrapping_add(rela.r_offset as usize)
-            .cast::<u64>()
-            .cast_mut(),
-        transmute::<_, u64>(base) + rela.r_addend as u64,
-    )
-}
-
-fn apply_relocations(rela_tbl: &[Elf64_Rela], base: *const u8) {
-    rela_tbl.iter().for_each(|rela| {
-        let elf64_r_type = |i: u64| (i & 0xffffffff).try_into().unwrap();
-        match elf64_r_type(rela.r_info) {
-            abi::R_X86_64_IRELATIVE => unsafe { apply_irelative_relocation(base, rela) },
-            abi::R_X86_64_RELATIVE => unsafe { apply_relative_relocation(base, rela) },
-            _ => (),
-        }
-    });
-}
-
-unsafe fn mprotect_segment(base: *const u8, ph: &Elf64_Phdr) {
+unsafe fn mprotect_segment(base: *const u8, ph: &Elf64_Phdr, prots: Protection) {
     protect(
         base.wrapping_add(ph.p_vaddr as usize),
         ph.p_memsz as usize,
-        flags_to_prot(ph.p_flags),
+        prots,
     )
     .unwrap()
 }
@@ -85,7 +53,7 @@ fn memcpy_segment(bytes: &[u8], ph: &Elf64_Phdr, map_start: *const u8) {
 
 fn mmap_segment(base: *const u8, ph: &Elf64_Phdr) -> (*const u8, Allocation) {
     let map_start = base.wrapping_add(ph.p_vaddr as usize);
-    let map = alloc_at(map_start, ph.p_memsz as usize, Protection::all()).unwrap();
+    let map = alloc_at(map_start, ph.p_memsz as usize, Protection::READ_WRITE).unwrap();
     (map_start, map)
 }
 
@@ -102,12 +70,7 @@ fn init_bss(map_start: *const u8, ph: &Elf64_Phdr) {
     }
 }
 
-fn build_stack(
-    argc: usize,
-    args: &Vec<CString>,
-    env: &Vec<CString>,
-    auxv: &Vec<(u64, u64)>,
-) -> Vec<u64> {
+fn build_stack(args: &Vec<CString>, env: &Vec<CString>, auxv: &Vec<(u64, u64)>) -> Vec<u64> {
     let mut stack = Vec::new();
     macro_rules! push {
         ($x:expr) => {
@@ -115,7 +78,7 @@ fn build_stack(
         };
     }
     const NULL: u64 = 0;
-    push!(argc);
+    push!(args.len());
     args.iter().for_each(|arg| push!(arg.as_ptr()));
     push!(NULL);
     env.iter().for_each(|v| push!(v.as_ptr()));
@@ -134,12 +97,16 @@ fn build_stack(
 }
 
 unsafe fn jump(entry_point: *const u8, sp: *const u64) -> ! {
+    extern "C" fn trail_func() {
+        println!("From Rust!");
+    }
     asm!(
         "mov rsp, {sp}",
-        "xor rdx, rdx",
+        "mov rdx, {trail_func}",
         "jmp {entry_point}",
         entry_point = in(reg) entry_point as u64,
         sp = in(reg) sp as u64,
+        trail_func = in(reg) trail_func as u64,
     );
     loop {}
 }
@@ -150,33 +117,19 @@ fn get_fixed_auxv(
     entry_point: *const u8,
     input_path: *const u8,
 ) -> Vec<(u64, u64)> {
-    extern "C" {
-        // from libc
-        fn getauxval(r#type: u64) -> u64;
-    }
-
-    /// Program headers for program
-    const AT_PHDR: u64 = 3;
-    /// Size of program header entry
-    const AT_PHENT: u64 = 4;
-    /// Number of program headers
-    const AT_PHNUM: u64 = 5;
-    /// Entry point of program
-    const AT_ENTRY: u64 = 9;
-    /// Filename of program
-    const AT_EXECFN: u64 = 31;
-
     let auxv: Vec<_> = (2_u64..=47)
         .into_iter()
         .filter_map(|r#type| unsafe {
-            match getauxval(r#type) {
+            match libc::getauxval(r#type) {
                 0 => None,
                 value => match r#type {
-                    AT_PHDR => Some((r#type, base.wrapping_add(ehdr.e_phoff as usize) as u64)),
-                    AT_PHNUM => Some((r#type, ehdr.e_phnum.into())),
-                    AT_PHENT => Some((r#type, ehdr.e_phentsize.into())),
-                    AT_ENTRY => Some((r#type, entry_point as u64)),
-                    AT_EXECFN => Some((r#type, input_path as u64)),
+                    libc::AT_PHDR => {
+                        Some((r#type, base.wrapping_add(ehdr.e_phoff as usize) as u64))
+                    }
+                    libc::AT_PHNUM => Some((r#type, ehdr.e_phnum.into())),
+                    libc::AT_PHENT => Some((r#type, ehdr.e_phentsize.into())),
+                    libc::AT_ENTRY => Some((r#type, entry_point as u64)),
+                    libc::AT_EXECFN => Some((r#type, input_path as u64)),
                     _ => Some((r#type, value)),
                 },
             }
@@ -185,34 +138,57 @@ fn get_fixed_auxv(
     auxv
 }
 
-fn get_base(load_phdrs: Vec<&Elf64_Phdr>) -> *const u8 {
-    let mem_range = load_phdrs
-        .iter()
-        .fold((std::u64::MAX, std::u64::MIN), |acc, x| {
-            (min(acc.0, x.p_vaddr), max(acc.1, x.p_vaddr + x.p_memsz))
-        });
+fn get_base(load_phdrs: Option<Vec<&Elf64_Phdr>>) -> *const u8 {
+    let base = BASE.get_or_init(|| {
+        let mem_range = load_phdrs
+            .unwrap()
+            .iter()
+            .fold((std::u64::MAX, std::u64::MIN), |acc, x| {
+                (min(acc.0, x.p_vaddr), max(acc.1, x.p_vaddr + x.p_memsz))
+            });
 
-    /* For dynamic ELF let the kernel chose the address. */
-    /* Check that we can hold the whole image. */
-    // temporary value (aka mapping) gets dropped
-    let base = alloc((mem_range.1 - mem_range.0) as usize, Protection::READ_WRITE)
-        .unwrap()
-        .as_ptr::<u8>()
-        .wrapping_sub(mem_range.0 as usize);
-    base
+        /* For dynamic ELF let the kernel chose the address. */
+        /* Check that we can hold the whole image. */
+        // temporary value (aka mapping) gets dropped
+        let base = alloc((mem_range.1 - mem_range.0) as usize, Protection::READ_WRITE)
+            .unwrap()
+            .as_ptr::<u8>()
+            .wrapping_sub(mem_range.0 as usize);
+        base as u64
+    });
+    *base as *const u8
 }
+
+unsafe extern "C" fn sigsegv_handler(_signo: libc::c_int, info: *const libc::siginfo_t) {
+    println!("SIGSEGV!\n\n");
+    let foul_addr = info.as_ref().unwrap().si_addr() as u64;
+    let base = get_base(None);
+    let foul_addr = foul_addr - base as u64;
+    let (_, phdrs) = parse(BYTES.get().unwrap());
+    let ph = phdrs
+        .iter()
+        .filter(|ph| ph.p_type == libc::PT_LOAD)
+        .find(|ph| (ph.p_vaddr..ph.p_vaddr + ph.p_memsz).contains(&foul_addr))
+        .unwrap();
+    mprotect_segment(base, ph, flags_to_prot(ph.p_flags))
+}
+
+fn parse<'a>(bytes: &'a [u8]) -> (&'a Elf64_Ehdr, &'a [Elf64_Phdr]) {
+    let ehdr = &as_custom_slice::<Elf64_Ehdr>(bytes, 1)[0];
+    let phdrs = as_custom_slice::<Elf64_Phdr>(&bytes[ehdr.e_phoff as usize..], ehdr.e_phnum.into());
+    (ehdr, phdrs)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let input_path = env::args().nth(1).expect("usage: loader [program]...");
     let input_path = std::fs::canonicalize(input_path)?;
-    let bytes = std::fs::read(&input_path)?;
+    let bytes = BYTES.get_or_init(|| std::fs::read(&input_path).unwrap());
 
-    let ehdr = &as_custom_slice::<Elf64_Ehdr>(&bytes, 1)[0];
-    let phdrs = as_custom_slice::<Elf64_Phdr>(&bytes[ehdr.e_phoff as usize..], ehdr.e_phnum.into());
-    let shdrs = as_custom_slice::<Elf64_Shdr>(&bytes[ehdr.e_shoff as usize..], ehdr.e_shnum.into());
+    let (ehdr, phdrs) = parse(BYTES.get().unwrap());
+    let load_phdrs_iter = phdrs.iter().filter(|ph| ph.p_type == libc::PT_LOAD);
 
-    let load_phdrs_iter = phdrs.iter().filter(|ph| ph.p_type == abi::PT_LOAD);
+    let base = get_base(Some(load_phdrs_iter.clone().collect()));
 
-    let base = get_base(load_phdrs_iter.clone().collect());
     let entry_point = base.wrapping_add(ehdr.e_entry as usize);
     let load_phdrs_iter = load_phdrs_iter.into_iter().filter(|ph| ph.p_memsz > 0);
 
@@ -227,29 +203,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         })
         .collect();
 
-    if let Some(sh) = shdrs.iter().find(|sh| sh.sh_type == abi::SHT_RELA) {
-        let rela_tbl = as_custom_slice::<Elf64_Rela>(
-            &bytes[sh.sh_offset as usize..],
-            (sh.sh_size / sh.sh_entsize) as usize,
-        );
-        apply_relocations(rela_tbl, base);
-    };
-
     load_phdrs_iter
         .clone()
-        .for_each(|ph| unsafe { mprotect_segment(base, ph) });
+        .for_each(|ph| unsafe { mprotect_segment(base, ph, Protection::empty()) });
 
     let args: Vec<_> = env::args()
         .skip(1)
         .map(|arg| CString::new(arg).unwrap())
         .collect();
-    let argc = args.len();
     let env: Vec<_> = env::vars()
         .map(|(k, v)| CString::new(format!("{}={}", k, v)).unwrap())
         .collect();
     let auxv = get_fixed_auxv(base, ehdr, entry_point, args[0].as_ptr().cast());
 
-    let stack_data = build_stack(argc, &args, &env, &auxv);
+    let stack_data = build_stack(&args, &env, &auxv);
     let stack_len = stack_data.len();
 
     const STACK_SIZE: usize = 10000;
@@ -257,6 +224,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     (0..=(stack_len - 1)).into_iter().rev().for_each(|i| {
         stack[STACK_SIZE - stack_len + i] = stack_data[i];
     });
+
+    let act: libc::sigaction = libc::sigaction {
+        sa_sigaction: sigsegv_handler as usize,
+        sa_mask: unsafe { transmute([0_u64; 16]) },
+        sa_flags: libc::SA_SIGINFO,
+        sa_restorer: None,
+    };
+
+    unsafe {
+        libc::sigaction(libc::SIGSEGV, &act as *const _, std::ptr::null_mut());
+    }
 
     unsafe {
         jump(
